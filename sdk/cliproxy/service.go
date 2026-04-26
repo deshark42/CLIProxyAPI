@@ -16,7 +16,7 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
-	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	iu "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -480,6 +480,12 @@ func (s *Service) Run(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
+	if s.cfg.UsageStatisticsPersistPath != "" {
+		if err := iu.InitUsagePersistence(s.cfg.UsageStatisticsPersistPath); err != nil {
+			log.Warnf("usage statistics persistence disabled: %v", err)
+		}
+	}
+
 	usage.StartDefault(ctx)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -790,7 +796,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
-	})
+
+		if err := iu.CloseUsagePersistence(); err != nil {
+			log.Errorf("failed to close usage persistence: %v", err)
+		}
+		})
 	return shutdownErr
 }
 

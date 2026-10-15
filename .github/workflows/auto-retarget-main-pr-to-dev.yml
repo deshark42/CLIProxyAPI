@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   retarget:
-    if: github.actor != 'github-actions[bot]'
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: Retarget PR base to dev

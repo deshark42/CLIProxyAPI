@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,11 @@ import (
 
 func TestGinLogrusRecoveryRepanicsErrAbortHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+
+	var recoveryLog bytes.Buffer
+	originalWriter := gin.DefaultErrorWriter
+	gin.DefaultErrorWriter = &recoveryLog
+	t.Cleanup(func() { gin.DefaultErrorWriter = originalWriter })
 
 	engine := gin.New()
 	engine.Use(GinLogrusRecovery())
@@ -37,6 +43,9 @@ func TestGinLogrusRecoveryRepanicsErrAbortHandler(t *testing.T) {
 		}
 		if err != http.ErrAbortHandler {
 			t.Fatalf("expected exact ErrAbortHandler sentinel, got %v", err)
+		}
+		if recoveryLog.Len() != 0 {
+			t.Fatalf("transport abort produced a recovery log: %s", recoveryLog.String())
 		}
 	}()
 

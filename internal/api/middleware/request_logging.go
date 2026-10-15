@@ -74,14 +74,19 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		attachRequestLogSources(c, logger, loggerEnabled)
 		attachDeferredRequestBodyCapture(c.Request, logger, requestInfo, loggerEnabled, captureBody)
 
-		// Process the request
+		defer func() {
+			recovered := recover()
+			// Transport aborts still need to close streaming logs and release captured bodies.
+			if recovered == nil || recovered == http.ErrAbortHandler {
+				if errFinalize := wrapper.Finalize(c); errFinalize != nil {
+					log.WithError(errFinalize).Debug("failed to finalize request log")
+				}
+			}
+			if recovered != nil {
+				panic(recovered)
+			}
+		}()
 		c.Next()
-
-		// Finalize logging after request processing
-		if err = wrapper.Finalize(c); err != nil {
-			// Log error but don't interrupt the response
-			// In a real implementation, you might want to use a proper logger here
-		}
 	}
 }
 

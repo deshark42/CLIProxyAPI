@@ -124,6 +124,48 @@ func TestRawHTTPPassthroughPreservesBodiesAndHeaders(t *testing.T) {
 	}
 }
 
+func TestRawHTTPPassthroughMirrorsSessionHeader(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Codex.RawHTTPPassthrough = true
+	body := []byte(`{"model":"raw-model","input":[{"role":"user","content":"hi"}],"prompt_cache_key":"body-cache-key"}`)
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{"underscore session id", map[string]string{"Session_id": "session-abc"}, "session-abc"},
+		{"canonical session id wins", map[string]string{"Session-Id": "session-canonical", "Session_id": "session-abc"}, "session-canonical"},
+		{"body cache key fallback", map[string]string{}, "body-cache-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := rawHTTPTestRouter(t, cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got, readErr := io.ReadAll(r.Body)
+				if readErr != nil {
+					t.Error(readErr)
+				}
+				if !bytes.Equal(got, body) {
+					t.Errorf("body changed: want %q got %q", body, got)
+				}
+				if sessionID := r.Header.Get("Session-Id"); sessionID != tc.want {
+					t.Errorf("upstream Session-Id = %q, want %q", sessionID, tc.want)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"resp_x"}`))
+			}))
+			request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			for name, value := range tc.headers {
+				request.Header.Set(name, value)
+			}
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestRawHTTPPassthroughPreservesCompressedBodies(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Codex.RawHTTPPassthrough = true

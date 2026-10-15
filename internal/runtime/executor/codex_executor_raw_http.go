@@ -64,6 +64,11 @@ func (e *CodexExecutor) RawResponses(ctx context.Context, auth *cliproxyauth.Aut
 	if _, ok := upstream.Header["User-Agent"]; !ok {
 		upstream.Header["User-Agent"] = nil
 	}
+	// The Codex backend keys prompt caching on Session-Id, not on the body's
+	// prompt_cache_key. Ingresses that drop underscore headers would otherwise strip the
+	// caller's Session_id and force a fresh cache key on every request. Headers only; the
+	// body stays byte-identical.
+	helps.EnsureCodexSessionHeader(upstream.Header, semanticBody)
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, OriginalRequest: semanticBody, Headers: incoming.Header, Query: incoming.URL.Query(), Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: incoming.URL.Path}}
 	request := cliproxyexecutor.Request{Model: model, Payload: semanticBody}
 	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, sdktranslator.FormatCodex.String(), "", semanticBody, request, opts)

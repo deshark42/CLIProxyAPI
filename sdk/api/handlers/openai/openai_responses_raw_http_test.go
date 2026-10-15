@@ -21,7 +21,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-func rawHTTPTestRouter(t *testing.T, cfg *config.Config, upstream http.Handler) http.Handler {
+func rawHTTPTestRouter(t *testing.T, cfg *config.Config, upstream http.Handler, middleware ...gin.HandlerFunc) http.Handler {
 	t.Helper()
 	server := httptest.NewServer(upstream)
 	t.Cleanup(server.Close)
@@ -40,6 +40,7 @@ func rawHTTPTestRouter(t *testing.T, cfg *config.Config, upstream http.Handler) 
 	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
 	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
 	router := gin.New()
+	router.Use(middleware...)
 	router.POST("/v1/responses", h.Responses)
 	router.POST("/v1/responses/compact", h.Compact)
 	return router

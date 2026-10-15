@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,7 +18,12 @@ import (
 
 // RawResponses bypasses protocol adapters and returns the upstream HTTP response intact.
 // semanticBody is a read-only decoded copy used for routing and payload-rule validation.
-func (e *CodexExecutor) RawResponses(ctx context.Context, auth *cliproxyauth.Auth, incoming *http.Request, semanticBody []byte) (*http.Response, error) {
+func (e *CodexExecutor) RawResponses(ctx context.Context, auth *cliproxyauth.Auth, incoming *http.Request, semanticBody []byte) (response *http.Response, err error) {
+	model := gjson.GetBytes(semanticBody, "model").String()
+	reporter := helps.NewExecutorUsageReporter(ctx, e, model, auth)
+	reporter.SetStream(gjson.GetBytes(semanticBody, "stream").Bool())
+	reporter.SetTranslatedReasoningEffort(semanticBody, sdktranslator.FormatCodex.String())
+	defer reporter.TrackFailure(ctx, &err)
 	apiKey, baseURL := codexCreds(auth)
 	if err := ensureCodexSIWCCredentials(auth, apiKey); err != nil {
 		return nil, err
@@ -58,7 +64,6 @@ func (e *CodexExecutor) RawResponses(ctx context.Context, auth *cliproxyauth.Aut
 	if _, ok := upstream.Header["User-Agent"]; !ok {
 		upstream.Header["User-Agent"] = nil
 	}
-	model := gjson.GetBytes(semanticBody, "model").String()
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, OriginalRequest: semanticBody, Headers: incoming.Header, Query: incoming.URL.Query(), Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: incoming.URL.Path}}
 	request := cliproxyexecutor.Request{Model: model, Payload: semanticBody}
 	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), model, sdktranslator.FormatCodex.String(), "", semanticBody, request, opts)
@@ -71,7 +76,39 @@ func (e *CodexExecutor) RawResponses(ctx context.Context, auth *cliproxyauth.Aut
 	if finalBody := finalize(append([]byte(nil), semanticBody...)); !bytes.Equal(finalBody, semanticBody) {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "raw HTTP passthrough conflicts with payload rules that modify the request"}
 	}
-	return client.Do(upstream)
+	if e.cfg != nil && e.cfg.RequestLog {
+		wireBody, errRead := io.ReadAll(upstream.Body)
+		if errRead != nil {
+			return nil, errRead
+		}
+		upstream.Body = io.NopCloser(bytes.NewReader(wireBody))
+		var authID, authLabel, authType, authValue string
+		if auth != nil {
+			authID, authLabel = auth.ID, auth.Label
+			authType, authValue = auth.AccountInfo()
+		}
+		helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+			URL: upstream.URL.String(), Method: upstream.Method, Headers: upstream.Header.Clone(),
+			Body: wireBody, Provider: e.Identifier(), AuthID: authID, AuthLabel: authLabel,
+			AuthType: authType, AuthValue: authValue,
+		})
+	}
+	client = reporter.TrackHTTPClient(client)
+	response, err = client.Do(upstream)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return nil, err
+	}
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, response.StatusCode, response.Header.Clone())
+	if strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		reporter.SetStream(true)
+	}
+	var upstreamErr error
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		upstreamErr = statusErr{code: response.StatusCode, msg: http.StatusText(response.StatusCode)}
+	}
+	response.Body = helps.ObserveRawHTTPResponse(ctx, e.cfg, reporter, response, upstreamErr)
+	return response, nil
 }
 
 func (e *CodexAutoExecutor) RawResponses(ctx context.Context, auth *cliproxyauth.Auth, incoming *http.Request, semanticBody []byte) (*http.Response, error) {

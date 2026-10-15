@@ -336,7 +336,8 @@ upstream:
     # Matching payload rules that would modify the body cause a local error instead.
     # Status, end-to-end headers, trailers, and compressed response bytes are forwarded.
     # Only destination/authentication and hop-by-hop transport headers are changed.
-    # No usage is extracted from raw responses. Custom non-http.Transport backends are rejected.
+    # Request logs and usage are observed without rewriting the forwarded bytes.
+    # Custom non-http.Transport backends are rejected.
     # WebSocket and Home dispatch are not covered by this mode.
     raw-http-passthrough: false
 

@@ -2,6 +2,8 @@ name: pr-test-build
 
 on:
   pull_request:
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -17,8 +19,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Test configuration and OpenAI API handlers
+        run: go test ./internal/config ./sdk/api/handlers/openai ./internal/watcher/diff -timeout 90s
       - name: Build
         run: |
           go build -o test-output ./cmd/server

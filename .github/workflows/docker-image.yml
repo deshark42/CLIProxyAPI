@@ -3,151 +3,166 @@ name: docker-image
 on:
   push:
     tags:
-      - v*
+      - 'v*'
+  workflow_dispatch:
 
-env:
-  APP_NAME: CLIProxyAPI
-  DOCKERHUB_REPO: eceasy/cli-proxy-api
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  docker_amd64:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
-          echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
-      - name: Build and push (amd64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          build-args: |
-            VERSION=${{ env.VERSION }}
-            COMMIT=${{ env.COMMIT }}
-            BUILD_DATE=${{ env.BUILD_DATE }}
-          tags: |
-            ${{ env.DOCKERHUB_REPO }}:latest-amd64
-            ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-amd64
+  checks:
+    uses: ./.github/workflows/pr-test-build.yml
 
-  docker_arm64:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
-          echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
-      - name: Build and push (arm64)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/arm64
-          push: true
-          build-args: |
-            VERSION=${{ env.VERSION }}
-            COMMIT=${{ env.COMMIT }}
-            BUILD_DATE=${{ env.BUILD_DATE }}
-          tags: |
-            ${{ env.DOCKERHUB_REPO }}:latest-arm64
-            ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-arm64
-
-  docker_manifest:
+  metadata:
+    needs: checks
     runs-on: ubuntu-latest
-    needs:
-      - docker_amd64
-      - docker_arm64
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+      version: ${{ steps.build.outputs.version }}
+      commit: ${{ steps.build.outputs.commit }}
+      date: ${{ steps.build.outputs.date }}
+      architectures: ${{ steps.build.outputs.architectures }}
+      labels: ${{ steps.meta.outputs.labels }}
+      json: ${{ steps.meta.outputs.json }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Generate Build Metadata
-        run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          echo COMMIT=`git rev-parse --short HEAD` >> $GITHUB_ENV
-          echo BUILD_DATE=`date -u +%Y-%m-%dT%H:%M:%SZ` >> $GITHUB_ENV
-      - name: Create and push multi-arch manifests
-        run: |
-          docker buildx imagetools create \
-            --tag "${DOCKERHUB_REPO}:latest" \
-            "${DOCKERHUB_REPO}:latest-amd64" \
-            "${DOCKERHUB_REPO}:latest-arm64"
-          docker buildx imagetools create \
-            --tag "${DOCKERHUB_REPO}:${VERSION}" \
-            "${DOCKERHUB_REPO}:${VERSION}-amd64" \
-            "${DOCKERHUB_REPO}:${VERSION}-arm64"
-      - name: Cleanup temporary tags
-        continue-on-error: true
+      - name: Generate build metadata
+        id: build
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          ENABLE_ARM64_BUILDS: ${{ vars.ENABLE_ARM64_BUILDS }}
+        shell: bash
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          if [[ "$ENABLE_ARM64_BUILDS" == "true" ]]; then
+            echo 'architectures=["amd64","arm64"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'architectures=["amd64"]' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Generate image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.build.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          flavor: latest=false
+
+  build:
+    name: build (${{ matrix.arch }})
+    needs: metadata
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.metadata.outputs.architectures) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            COMMIT=${{ needs.metadata.outputs.commit }}
+            BUILD_DATE=${{ needs.metadata.outputs.date }}
+          labels: ${{ needs.metadata.outputs.labels }}
+          outputs: type=image,name=${{ needs.metadata.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+      - name: Export image digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          retention-days: 1
+          overwrite: true
+
+  publish:
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: image-digests-*
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish multi-platform manifests
+        env:
+          IMAGE: ${{ needs.metadata.outputs.image }}
+          METADATA_JSON: ${{ needs.metadata.outputs.json }}
+          ARCHITECTURES: ${{ needs.metadata.outputs.architectures }}
+          DIGEST_DIR: ${{ runner.temp }}/digests
+        shell: bash
         run: |
           set -euo pipefail
-          namespace="${DOCKERHUB_REPO%%/*}"
-          repo_name="${DOCKERHUB_REPO#*/}"
+          tag_args=()
+          while IFS= read -r tag; do
+            tag_args+=(--tag "$tag")
+          done < <(jq -r '.tags[]' <<< "$METADATA_JSON")
+          [[ ${#tag_args[@]} -gt 0 ]]
 
-          token="$(
-            curl -fsSL \
-              -H 'Content-Type: application/json' \
-              -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
-              'https://hub.docker.com/v2/users/login/' \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])'
-          )"
-
-          delete_tag() {
-            local tag="$1"
-            local url="https://hub.docker.com/v2/repositories/${namespace}/${repo_name}/tags/${tag}/"
-            local http_code
-            http_code="$(curl -sS -o /dev/null -w "%{http_code}" -X DELETE -H "Authorization: JWT ${token}" "${url}" || true)"
-            if [ "${http_code}" = "204" ] || [ "${http_code}" = "404" ]; then
-              echo "Docker Hub tag removed (or missing): ${DOCKERHUB_REPO}:${tag} (HTTP ${http_code})"
-              return 0
-            fi
-            echo "Docker Hub tag delete failed: ${DOCKERHUB_REPO}:${tag} (HTTP ${http_code})"
-            return 0
-          }
-
-          delete_tag "latest-amd64"
-          delete_tag "latest-arm64"
-          delete_tag "${VERSION}-amd64"
-          delete_tag "${VERSION}-arm64"
+          shopt -s nullglob
+          digest_files=("$DIGEST_DIR"/*)
+          expected_count="$(jq -r 'length' <<< "$ARCHITECTURES")"
+          if [[ ${#digest_files[@]} -ne "$expected_count" ]]; then
+            echo "Expected image digests for $expected_count enabled architecture(s)" >&2
+            exit 1
+          fi
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            digest="${digest_file##*/}"
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            sources+=("$IMAGE@sha256:$digest")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          tag="$(jq -r '.tags[0]' <<< "$METADATA_JSON")"
+          docker buildx imagetools inspect "$tag"
+          docker buildx imagetools inspect --raw "$tag" | jq -e --argjson expected "$ARCHITECTURES" '
+            [.manifests[].platform | select(.os == "linux") | .architecture]
+            | unique | sort == ($expected | sort)
+          '

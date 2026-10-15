@@ -22,6 +22,53 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 )
 
+func TestRequestLoggingMiddleware_FinalizesOnTransportAbort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, contentType := range []string{"application/json", "text/event-stream"} {
+		t.Run(contentType, func(t *testing.T) {
+			logsDir := t.TempDir()
+			logger := logging.NewFileRequestLogger(true, logsDir, "", 10)
+			router := gin.New()
+			router.Use(logging.GinLogrusRecovery(), RequestLoggingMiddleware(logger))
+			router.POST("/v1/responses", func(c *gin.Context) {
+				c.Header("Content-Type", contentType)
+				_, _ = c.Writer.Write([]byte("partial upstream bytes"))
+				panic(http.ErrAbortHandler)
+			})
+			recorder := httptest.NewRecorder()
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != http.ErrAbortHandler {
+						t.Errorf("abort signal = %v, want http.ErrAbortHandler", recovered)
+					}
+				}()
+				router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"raw-model"}`)))
+			}()
+			if recorder.Code != http.StatusOK || recorder.Body.String() != "partial upstream bytes" {
+				t.Fatalf("response changed: status=%d body=%q", recorder.Code, recorder.Body.String())
+			}
+			entries, err := os.ReadDir(logsDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found bool
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+					continue
+				}
+				content, errRead := os.ReadFile(logsDir + string(os.PathSeparator) + entry.Name())
+				if errRead != nil {
+					t.Fatal(errRead)
+				}
+				found = found || bytes.Contains(content, []byte("partial upstream bytes"))
+			}
+			if !found {
+				t.Fatal("aborted response log was not finalized")
+			}
+		})
+	}
+}
+
 func TestShouldSkipMethodForRequestLogging(t *testing.T) {
 	tests := []struct {
 		name string

@@ -200,6 +200,9 @@ type AntigravityConnectionPoolConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	// RawHTTPPassthrough forwards HTTP Responses bodies without protocol adaptation.
+	RawHTTPPassthrough bool `yaml:"raw-http-passthrough" json:"raw-http-passthrough"`
+
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of

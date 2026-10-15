@@ -140,6 +140,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("antigravity.connection-pool.max-idle-conns-per-host: %s -> %s", oldMaxIdle, newMaxIdle))
 	}
 
+	if oldCfg.Codex.RawHTTPPassthrough != newCfg.Codex.RawHTTPPassthrough {
+		changes = append(changes, fmt.Sprintf("upstream.codex.raw-http-passthrough: %t -> %t", oldCfg.Codex.RawHTTPPassthrough, newCfg.Codex.RawHTTPPassthrough))
+	}
 	if oldCfg.Codex.DisableCodexCloaking != newCfg.Codex.DisableCodexCloaking {
 		changes = append(changes, fmt.Sprintf("codex.disable-codex-cloaking: %t -> %t", oldCfg.Codex.DisableCodexCloaking, newCfg.Codex.DisableCodexCloaking))
 	}

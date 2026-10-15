@@ -608,6 +608,10 @@ func (h *OpenAIResponsesAPIHandler) prepareCodexOrphanDelegation(c *gin.Context,
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
+	if h.rawHTTPPassthroughEnabled() {
+		h.handleRawHTTPResponse(c)
+		return
+	}
 	rawJSON, err := handlers.ReadRequestBody(c)
 	// If data retrieval fails, return a 400 Bad Request error.
 	if err != nil {
@@ -634,6 +638,10 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 }
 
 func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
+	if h.rawHTTPPassthroughEnabled() {
+		h.handleRawHTTPResponse(c)
+		return
+	}
 	rawJSON, err := handlers.ReadRequestBody(c)
 	if err != nil {
 		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), handlers.ErrorResponse{

@@ -329,6 +329,19 @@ client:
 # Shared upstream behavior applies to OAuth and API-key credentials.
 upstream:
   codex:
+    # HTTP /responses and /responses/compact only: preserve request and response body bytes.
+    # Routes these endpoints directly to Codex, bypassing translators, tool injection,
+    # model rewriting, cloaking, SSE filtering, plugin payload hooks, and retries.
+    # The client must send a Codex-compatible body (including stream=true if required).
+    # Every request to these endpoints is routed to a Codex credential, whatever model it names.
+    # Matching payload rules that would modify the body cause a local error instead.
+    # Status, end-to-end headers, trailers, and compressed response bytes are forwarded.
+    # Only destination/authentication and hop-by-hop transport headers are changed.
+    # Request logs and usage are observed without rewriting the forwarded bytes.
+    # Custom non-http.Transport backends are rejected.
+    # WebSocket and Home dispatch are not covered by this mode.
+    raw-http-passthrough: false
+
     # Experimental full-duplex Codex Responses WebSocket steering (default: false).
     # Keeps one upstream account/model per socket; accepted input is never replayed.
     response-steering: false

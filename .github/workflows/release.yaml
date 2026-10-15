@@ -15,6 +15,7 @@ env:
 
 jobs:
   prepare-release:
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -690,7 +691,7 @@ jobs:
 
   publish-checksums:
     runs-on: ubuntu-latest
-    if: always()
+    if: false
     needs:
       - build-hosted
       - build-linux-glibc

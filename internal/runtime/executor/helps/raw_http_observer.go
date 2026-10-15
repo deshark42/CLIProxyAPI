@@ -22,12 +22,15 @@ import (
 // This bounds telemetry buffers only; oversized bodies and events are still forwarded.
 const rawHTTPUsageBufferLimit = 4 << 20
 
+// rawHTTPUsageSniffLimit bounds the prefix buffered while the body format is still unknown.
+const rawHTTPUsageSniffLimit = 64
+
 // ObserveRawHTTPResponse records a response without changing the bytes read by its caller.
 // The returned body must be closed, including when downstream forwarding is interrupted.
 func ObserveRawHTTPResponse(ctx context.Context, cfg *config.Config, reporter *UsageReporter, response *http.Response, upstreamErr error) io.ReadCloser {
 	observer := &rawHTTPResponseBody{
 		body: response.Body, ctx: ctx, cfg: cfg, reporter: reporter, upstreamErr: upstreamErr,
-		parser: &rawHTTPUsageParser{reporter: reporter, sse: strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream")},
+		parser: newRawHTTPUsageParser(reporter, response.Header.Get("Content-Type")),
 	}
 	encoding := strings.TrimSpace(strings.ToLower(response.Header.Get("Content-Encoding")))
 	if encoding != "" && encoding != "identity" {
@@ -169,15 +172,78 @@ func observeRawHTTPEncoded(reader io.Reader, encoding string, parser *rawHTTPUsa
 type rawHTTPUsageParser struct {
 	reporter   *UsageReporter
 	sse        bool
+	decided    bool
 	line       []byte
 	data       []byte
+	prefix     []byte
 	drop       bool
 	previousCR bool
 	detail     usage.Detail
 	failure    error
 }
 
+// newRawHTTPUsageParser builds a parser that trusts an explicit Content-Type.
+// Codex upstream responses may omit Content-Type entirely while still streaming SSE,
+// so an undecided parser sniffs the body prefix instead of trusting the header alone.
+func newRawHTTPUsageParser(reporter *UsageReporter, contentType string) *rawHTTPUsageParser {
+	parser := &rawHTTPUsageParser{reporter: reporter}
+	lower := strings.ToLower(contentType)
+	switch {
+	case strings.Contains(lower, "text/event-stream"):
+		parser.sse, parser.decided = true, true
+	case strings.Contains(lower, "json"):
+		parser.decided = true
+	}
+	return parser
+}
+
 func (p *rawHTTPUsageParser) Write(chunk []byte) (int, error) {
+	if !p.decided {
+		room := rawHTTPUsageSniffLimit - len(p.prefix)
+		if room > len(chunk) {
+			room = len(chunk)
+		}
+		p.prefix = append(p.prefix, chunk[:room]...)
+		if !p.decide() {
+			return len(chunk), nil
+		}
+		buffered := p.prefix
+		p.prefix = nil
+		p.writeDecoded(buffered)
+		p.writeDecoded(chunk[room:])
+		return len(chunk), nil
+	}
+	p.writeDecoded(chunk)
+	return len(chunk), nil
+}
+
+// decide resolves the body format from the buffered prefix. An undecidable prefix
+// longer than the sniff limit falls back to JSON, which matches the historical default.
+func (p *rawHTTPUsageParser) decide() bool {
+	trimmed := bytes.TrimLeft(p.prefix, " \t\r\n")
+	if len(trimmed) > 0 {
+		if trimmed[0] == '{' || trimmed[0] == '[' {
+			p.decided = true
+			return true
+		}
+		for _, field := range [][]byte{[]byte("event:"), []byte("data:"), []byte("id:"), []byte("retry:"), []byte(":")} {
+			if bytes.HasPrefix(trimmed, field) {
+				p.sse, p.decided = true, true
+				return true
+			}
+		}
+	}
+	if len(p.prefix) >= rawHTTPUsageSniffLimit {
+		p.decided = true
+		return true
+	}
+	return false
+}
+
+func (p *rawHTTPUsageParser) writeDecoded(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
 	if !p.sse {
 		if !p.drop {
 			if len(chunk) > rawHTTPUsageBufferLimit-len(p.data) {
@@ -187,7 +253,7 @@ func (p *rawHTTPUsageParser) Write(chunk []byte) (int, error) {
 				p.data = append(p.data, chunk...)
 			}
 		}
-		return len(chunk), nil
+		return
 	}
 	for _, ch := range chunk {
 		if p.previousCR && ch == '\n' {
@@ -203,7 +269,6 @@ func (p *rawHTTPUsageParser) Write(chunk []byte) (int, error) {
 			p.drop = true
 		}
 	}
-	return len(chunk), nil
 }
 
 func (p *rawHTTPUsageParser) consumeLine() {
@@ -227,6 +292,12 @@ func (p *rawHTTPUsageParser) consumeLine() {
 }
 
 func (p *rawHTTPUsageParser) finish() {
+	if !p.decided {
+		p.decided = true
+		buffered := p.prefix
+		p.prefix = nil
+		p.writeDecoded(buffered)
+	}
 	if p.sse && len(p.line) > 0 {
 		p.consumeLine()
 	}
